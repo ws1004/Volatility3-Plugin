@@ -3,22 +3,22 @@
 
 __author__ = 'GyuBin Kim'
 __email__ = 'ws1004@kakao.com'
-__version__ = '1.0.0'
+__version__ = '2.0.0'
 
 import sys, pefile
 from colorama import Fore, Style, init
 
 from volatility3.framework import interfaces, symbols, exceptions, renderers, constants
 from volatility3.framework.configuration import requirements
-from volatility3.plugins.windows import pslist, vadinfo, modules, info
+from volatility3.plugins.windows import pslist, vadinfo, modules
 from volatility3.cli import text_renderer
 
 init(autoreset=True)
 
 class Detect_malware(interfaces.plugins.PluginInterface):
 
-    _required_framework_version = (2,0,0)
-    _version = (1,0,0)
+    _required_framework_version = (2, 26, 0)
+    _version = (2, 0, 0)
 
     @classmethod
     def get_requirements(cls):
@@ -43,15 +43,26 @@ class Detect_malware(interfaces.plugins.PluginInterface):
                 description="Detect PE Injection",
                 optional=True,
             ),
-            requirements.PluginRequirement(
-                name='pslist',
-                plugin=pslist.PsList,
-                version=(2,0,0)
+            requirements.ListRequirement(
+                name="pid",
+                element_type=int,
+                description="Filter on specific process IDs",
+                optional=True,
             ),
-            requirements.PluginRequirement(
-                name='vadinfo',
-                plugin=vadinfo.VadInfo,
-                version=(2,0,0)
+            requirements.VersionRequirement(
+                name="pslist",
+                component=pslist.PsList,
+                version=(3, 0, 0),
+            ),
+            requirements.VersionRequirement(
+                name="vadinfo",
+                component=vadinfo.VadInfo,
+                version=(2, 0, 0),
+            ),
+            requirements.VersionRequirement(
+                name="modules",
+                component=modules.Modules,
+                version=(3, 0, 0),
             ),
         ]
 
@@ -67,9 +78,9 @@ class Detect_malware(interfaces.plugins.PluginInterface):
         return "\n".join(lines)
 
     @classmethod
-    def get_kernel_modules(cls, context, layer_name, symbol_table):
+    def get_kernel_modules(cls, context, kernel_module_name):
         kernel_modules = {}
-        for module in modules.Modules.list_modules(context, layer_name, symbol_table):
+        for module in modules.Modules.list_modules(context, kernel_module_name):
             try:
                 module_name = module.FullDllName.get_string().lower()
                 kernel_modules[module_name] = {
@@ -178,7 +189,7 @@ class Detect_malware(interfaces.plugins.PluginInterface):
                 if not symbols.symbol_table_is_64bit(context, symbol_table): architecture = "intel"
                 else: architecture = "intel64"
 
-                disasm = interfaces.renderers.Disassembly(data, vad.get_start(), architecture)
+                disasm = renderers.Disassembly(data, vad.get_start(), architecture)
                 result += f"{text_renderer.display_disassembly(disasm)}\n\n"
             
         if suspect_flag:
@@ -231,7 +242,7 @@ class Detect_malware(interfaces.plugins.PluginInterface):
                         if not symbols.symbol_table_is_64bit(context, symbol_table): architecture = "intel"
                         else: architecture = "intel64"
 
-                        disasm = interfaces.renderers.Disassembly(data, vad.get_start(), architecture)
+                        disasm = renderers.Disassembly(data, vad.get_start(), architecture)
                         result += f"{text_renderer.display_disassembly(disasm)}"
         if suspect_flag:
             return print(result)
@@ -263,7 +274,6 @@ class Detect_malware(interfaces.plugins.PluginInterface):
         yield (0,("Analysis complete!!",))
 
     def run(self):
-        kernel = self.context.modules[self.config["kernel"]]
         filter_func = pslist.PsList.create_pid_filter(self.config.get("pid", None))
 
         if not (self.config.get("dll", None) or self.config.get("thread", None) or self.config.get("pe", None)):
@@ -277,9 +287,8 @@ class Detect_malware(interfaces.plugins.PluginInterface):
             self._generator(
                 pslist.PsList.list_processes(
                     context=self.context,
-                    layer_name=kernel.layer_name,
-                    symbol_table = kernel.symbol_table_name,
-                    filter_func = filter_func,
+                    kernel_module_name=self.config["kernel"],
+                    filter_func=filter_func,
                 )
             )
         )
