@@ -3,7 +3,7 @@
 Volatility3 Plugin produced while doing personal research will be uploaded here.
 
 ### Currently produced plugins : 
-- `detect_injection.py` : This plugin focuses on identifying DLL injection, Thread injection, and PE injection in running processes on a Windows system.
+- `detect_injection.py` : This plugin focuses on identifying DLL injection, Thread injection, and PE injection in running processes on a Windows system. *(v2.x requires Volatility 3 Framework 2.26.0 or higher)*
 
 ### Types of plugins to be produced
 - Plugins that have never been produced

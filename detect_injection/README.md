@@ -5,9 +5,27 @@
 
 We will detect more Injections through additional research in the future.
 
+## Compatibility
+Volatility 3 changed its plugin API at framework 2.26.0 (`list_processes` / `list_modules` now take a
+single `kernel_module_name`, and `Disassembly` moved to `renderers`). Pick the version that matches
+your Volatility 3 install:
+
+| Plugin version | Volatility 3 Framework |
+| --- | --- |
+| `v2.x` (current) | 2.26.0 or higher |
+| `v1.x` | 2.5.2 ~ 2.11.0 |
+
+(There is no release between 2.11.0 and 2.26.0, so 2.11.0 is the last version `v1.x` runs on.)
+
+`v1.x` is no longer in the tree. To retrieve it:
+```bash
+git log --oneline -- detect_injection/
+git show <commit>:detect_injection/detect_injection.py
+```
+
 ## Requirements
 - Python 3.10 or higher
-- Volatility 3 Framework (version. 2.5.2 or higher)
+- Volatility 3 Framework (version. 2.26.0 or higher)
 - Required modules:
     - `pefile`
     - `colorama`
@@ -73,4 +91,4 @@ This plugin is distributed under the MIT License. See the LICENSE file for more 
 ## Author
 - Name : ws1004(GyuBin Kim)
 - Email : ws1004@kakao.com
-- Version : 1.0.0
+- Version : 2.0.0
