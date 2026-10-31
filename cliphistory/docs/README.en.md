@@ -50,7 +50,7 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
 ### Options :
 - `--pid PID [PID ...]` : Only scan these processes. Scanning only the `svchost.exe` hosting `cbdhsvc` is much faster.
 - `--text-limit N` : Maximum number of characters of text to display per item. `0` for no limit. (default: 256)
-- `--dump` : Write the complete text of each item to a file.
+- `--dump` : Write the complete text of each item to a file, and carve the clipboard images (PNG and DIB) from the same process memory to `.png` / `.bmp` files. Files are named `cliphistory.<PID>.<Offset>.<extension>`.
 
 ### Example Commands :
 1. Find the process hosting the Clipboard User Service :
@@ -61,7 +61,7 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
     ```markdown
     python vol.py -f [memory_dump.raw] windows.cliphistory --pid [PID]
     ```
-3. Dump the full text of every item :
+3. Dump the full text of every item and the images :
     ```markdown
     python vol.py -o [output_dir] -f [memory_dump.raw] windows.cliphistory --pid [PID] --dump
     ```
@@ -80,8 +80,27 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
 
 Items are sorted by timestamp.
 
+### Images (`--dump`)
+With `--dump`, one row per carved image is added after the history items. In these rows the columns mean:
+
+| Column | Meaning |
+| --- | --- |
+| `Offset` | Address of the image data (PNG signature or BITMAPINFOHEADER), also used in the file name |
+| `Formats` | `PNG image` or `DIB image` |
+| `Text` | Width x height, color depth and file size |
+| `File output` | Name of the written file |
+
+```
+PID    Process      Offset         Formats    Text                             File output
+10472  svchost.exe  0x1d84312000e  DIB image  317x211, 32 bpp, 267602 bytes    cliphistory.10472.0x1d84312000e.bmp
+10472  svchost.exe  0x1d84376000e  DIB image  1283x719, 32 bpp, 3689962 bytes  cliphistory.10472.0x1d84376000e.bmp
+```
+
+The pixels of image items sit behind nested, undocumented property maps, so the images are **carved by signature** instead of being followed by offset. As a result an image is not tied to its history item (`Bitmap`) automatically; match them by size, content and copy order.
+
 ## Limitations
-- Only the `Text` format is decoded. Other formats (HTML, images, files) are listed by name only.
+- Only the `Text` format is decoded. Images can be carved with `--dump` but are not tied to their items; HTML and file formats are listed by name only.
+- Carving finds every image left in the process memory, so images already removed from the history may be returned as well.
 - Freed items are recovered on a best effort basis; an item whose memory was partly reused may show no formats or no text.
 - Items larger than 4 MB are not kept by the clipboard history and therefore cannot be recovered.
 

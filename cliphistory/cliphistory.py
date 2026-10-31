@@ -3,6 +3,7 @@
 #
 import contextlib
 import datetime
+import hashlib
 import logging
 import struct
 import uuid
@@ -22,6 +23,15 @@ class HistoryItem(NamedTuple):
     timestamp: int
     formats: List[str]
     text: Optional[str]
+
+
+class CarvedImage(NamedTuple):
+    offset: int
+    kind: str
+    width: int
+    height: int
+    depth: int
+    data: bytes
 
 
 class ClipboardHistory(interfaces.plugins.PluginInterface):
@@ -61,6 +71,16 @@ class ClipboardHistory(interfaces.plugins.PluginInterface):
     SCAN_CHUNK = 0x400000
     MAX_VAD_SIZE = 0x40000000
 
+    # Image items keep their pixels behind nested, undocumented property maps that could not be
+    # tied back to an item reliably, so the images are carved from the same memory by signature.
+    PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+    PNG_END = b"IEND\xaeB`\x82"
+    DIB_HEADER = b"\x28\x00\x00\x00"  # BITMAPINFOHEADER.biSize
+    DIB_HEADER_SIZE = 0x28
+    DIB_DEPTHS = (1, 4, 8, 16, 24, 32)
+    MAX_IMAGE_BYTES = 64 * 1024 * 1024
+    MAX_IMAGE_DIMENSION = 20000
+
     @classmethod
     def get_requirements(cls) -> List[interfaces.configuration.RequirementInterface]:
         return [
@@ -86,7 +106,7 @@ class ClipboardHistory(interfaces.plugins.PluginInterface):
             ),
             requirements.BooleanRequirement(
                 name="dump",
-                description="Write the complete text of each item to a file",
+                description="Write the complete text of each item to a file, and carve the clipboard images (PNG and DIB) to files",
                 default=False,
                 optional=True,
             ),
@@ -217,6 +237,36 @@ class ClipboardHistory(interfaces.plugins.PluginInterface):
         layer = context.layers[proc.add_process_layer()]
         seen = set()
 
+        for chunk_start, _end, data in cls._private_chunks(proc, layer, cls.ITEM_SIZE):
+            for position in range(0, len(data) - cls.ITEM_SIZE + 1, 16):
+                vftables = struct.unpack_from(f"<{cls.ITEM_VFTABLES}Q", data, position)
+                if not all(service[0] <= vftable < service[1] for vftable in vftables):
+                    continue
+                offset = chunk_start + position
+                if offset in seen:
+                    continue
+                seen.add(offset)
+                item = cls._parse_item(
+                    layer,
+                    offset,
+                    data[position : position + cls.ITEM_SIZE],
+                    datatransfer,
+                )
+                if item is not None:
+                    yield item
+
+    @classmethod
+    def _private_chunks(
+        cls,
+        proc: interfaces.objects.ObjectInterface,
+        layer: interfaces.layers.DataLayerInterface,
+        overlap: int,
+    ) -> Iterator[Tuple[int, int, bytes]]:
+        """Yields the non empty chunks of a process's private memory as (start, VAD end, data).
+
+        Consecutive chunks overlap by the given number of bytes so a structure crossing a
+        chunk boundary is still seen whole.
+        """
         for vad in proc.get_vad_root().traverse():
             if not vad.get_private_memory():
                 continue
@@ -228,27 +278,119 @@ class ClipboardHistory(interfaces.plugins.PluginInterface):
                 continue
 
             for chunk_start in range(start, end, cls.SCAN_CHUNK):
-                # Overlap the chunks so an item crossing the boundary is still seen whole
-                size = min(cls.SCAN_CHUNK + cls.ITEM_SIZE, end - chunk_start)
+                size = min(cls.SCAN_CHUNK + overlap, end - chunk_start)
                 data = layer.read(chunk_start, size, pad=True)
-                if not data.strip(b"\x00"):
-                    continue
-                for position in range(0, len(data) - cls.ITEM_SIZE + 1, 16):
-                    vftables = struct.unpack_from(f"<{cls.ITEM_VFTABLES}Q", data, position)
-                    if not all(service[0] <= vftable < service[1] for vftable in vftables):
-                        continue
-                    offset = chunk_start + position
-                    if offset in seen:
-                        continue
-                    seen.add(offset)
-                    item = cls._parse_item(
-                        layer,
-                        offset,
-                        data[position : position + cls.ITEM_SIZE],
-                        datatransfer,
+                if data.strip(b"\x00"):
+                    yield chunk_start, end, data
+
+    @staticmethod
+    def _read_available(
+        layer: interfaces.layers.DataLayerInterface, offset: int, size: int
+    ) -> bytes:
+        """Reads up to size bytes, stopping at the first unreadable page instead of padding."""
+        data = b""
+        while len(data) < size:
+            chunk = min(size - len(data), 0x1000 - ((offset + len(data)) & 0xFFF))
+            try:
+                data += layer.read(offset + len(data), chunk)
+            except exceptions.InvalidAddressException:
+                break
+        return data
+
+    @classmethod
+    def _parse_dib(
+        cls, data: bytes, position: int
+    ) -> Optional[Tuple[int, int, int, int, int]]:
+        """Validates a BITMAPINFOHEADER.
+
+        Returns:
+            (width, height, depth, offset of the pixels, size of header + palette + pixels)
+        """
+        if position + cls.DIB_HEADER_SIZE > len(data):
+            return None
+        _size, width, height, planes, depth, compression = struct.unpack_from(
+            "<IiiHHI", data, position
+        )
+        if planes != 1 or depth not in cls.DIB_DEPTHS:
+            return None
+        if not 0 < width <= cls.MAX_IMAGE_DIMENSION:
+            return None
+        if not 0 < abs(height) <= cls.MAX_IMAGE_DIMENSION:
+            return None
+        if compression not in (0, 3):  # BI_RGB or BI_BITFIELDS
+            return None
+        pixels = ((width * depth + 31) // 32) * 4 * abs(height)
+        palette = (1 << depth) * 4 if depth <= 8 else 0
+        size = cls.DIB_HEADER_SIZE + palette + pixels
+        if size > cls.MAX_IMAGE_BYTES:
+            return None
+        return width, abs(height), depth, cls.DIB_HEADER_SIZE + palette, size
+
+    @classmethod
+    def carve_images(
+        cls,
+        context: interfaces.context.ContextInterface,
+        proc: interfaces.objects.ObjectInterface,
+    ) -> Iterator[CarvedImage]:
+        """Carves PNG and DIB images from the private memory of a cbdhsvc host process.
+
+        DIBs are returned as complete .bmp files. Identical images are only returned once.
+
+        Args:
+            context: The context to retrieve required elements (layers, symbol tables) from
+            proc: The process hosting the Clipboard User Service
+
+        Returns:
+            The images found in the process
+        """
+        if cls.SERVICE_DLL not in cls._module_ranges(proc):
+            return None
+
+        layer = context.layers[proc.add_process_layer()]
+        seen = set()
+
+        for chunk_start, end, data in cls._private_chunks(proc, layer, 0x1000):
+            found = []
+            position = data.find(cls.PNG_SIGNATURE)
+            while position != -1:
+                offset = chunk_start + position
+                tail = data.find(cls.PNG_END, position)
+                if tail != -1:
+                    blob = data[position : tail + len(cls.PNG_END)]
+                else:
+                    # The end of the image is past this chunk
+                    blob = cls._read_available(
+                        layer, offset, min(cls.MAX_IMAGE_BYTES, end - offset)
                     )
-                    if item is not None:
-                        yield item
+                    tail = blob.find(cls.PNG_END)
+                    blob = blob[: tail + len(cls.PNG_END)] if tail != -1 else b""
+                if len(blob) >= 24:
+                    width, height = struct.unpack_from(">II", blob, 16)
+                    found.append(CarvedImage(offset, "PNG", width, height, 32, blob))
+                position = data.find(cls.PNG_SIGNATURE, position + 8)
+
+            position = data.find(cls.DIB_HEADER)
+            while position != -1:
+                parsed = cls._parse_dib(data, position)
+                if parsed is not None:
+                    width, height, depth, pixel_offset, size = parsed
+                    offset = chunk_start + position
+                    dib = cls._read_available(layer, offset, min(size, end - offset))
+                    if len(dib) == size:
+                        # Prepend a BITMAPFILEHEADER so the image opens as a .bmp file
+                        header = b"BM" + struct.pack(
+                            "<IHHI", 14 + size, 0, 0, 14 + pixel_offset
+                        )
+                        found.append(
+                            CarvedImage(offset, "DIB", width, height, depth, header + dib)
+                        )
+                position = data.find(cls.DIB_HEADER, position + 4)
+
+            for image in found:
+                digest = hashlib.sha1(image.data).digest()
+                if digest not in seen:
+                    seen.add(digest)
+                    yield image
 
     def _generator(self, procs):
         limit = self.config["text-limit"]
@@ -292,6 +434,39 @@ class ClipboardHistory(interfaces.plugins.PluginInterface):
                         ", ".join(item.formats) or renderers.NotAvailableValue(),
                         length,
                         shown,
+                        file_output,
+                    ),
+                )
+
+            if not self.config["dump"] or not items:
+                continue
+
+            # Carved images cannot be tied to an item, so they are listed after the items under
+            # their own offset; match them to the Bitmap items by size and content
+            try:
+                images = list(self.carve_images(self.context, proc))
+            except exceptions.InvalidAddressException as excp:
+                vollog.debug(f"Unable to carve images from PID {pid}: {excp}")
+                continue
+
+            for image in images:
+                extension = "png" if image.kind == "PNG" else "bmp"
+                file_name = f"cliphistory.{pid}.{image.offset:#x}.{extension}"
+                with self.open(file_name) as file_handle:
+                    file_handle.write(image.data)
+                    file_output = file_handle.preferred_filename
+
+                yield (
+                    0,
+                    (
+                        pid,
+                        name,
+                        format_hints.Hex(image.offset),
+                        renderers.NotAvailableValue(),
+                        renderers.NotAvailableValue(),
+                        f"{image.kind} image",
+                        renderers.NotApplicableValue(),
+                        f"{image.width}x{image.height}, {image.depth} bpp, {len(image.data)} bytes",
                         file_output,
                     ),
                 )

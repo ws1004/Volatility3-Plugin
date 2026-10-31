@@ -55,7 +55,7 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
 ### 옵션 :
 - `--pid PID [PID ...]` : 지정한 프로세스만 스캔합니다. `cbdhsvc`가 도는 `svchost.exe`만 지정하면 훨씬 빠릅니다.
 - `--text-limit N` : 항목마다 표시할 최대 글자 수. `0`이면 제한 없음. (기본값: 256)
-- `--dump` : 각 항목의 전체 텍스트를 파일로 저장합니다.
+- `--dump` : 각 항목의 전체 텍스트를 파일로 저장하고, 같은 프로세스 메모리에서 클립보드 이미지(PNG, DIB)를 카빙해 `.png` / `.bmp` 파일로 저장합니다. 파일 이름은 `cliphistory.<PID>.<Offset>.<확장자>`입니다.
 
 ### 명령 예시 :
 1. Clipboard User Service가 도는 프로세스 찾기 :
@@ -66,7 +66,7 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
     ```markdown
     python vol.py -f [memory_dump.raw] windows.cliphistory --pid [PID]
     ```
-3. 모든 항목의 전체 텍스트 저장 :
+3. 모든 항목의 전체 텍스트와 이미지 저장 :
     ```markdown
     python vol.py -o [output_dir] -f [memory_dump.raw] windows.cliphistory --pid [PID] --dump
     ```
@@ -85,8 +85,27 @@ python vol.py -f [memory_dump.raw] windows.cliphistory
 
 항목은 타임스탬프 순으로 정렬됩니다.
 
+### 이미지 (`--dump`)
+`--dump`를 주면 히스토리 항목 뒤에 카빙한 이미지가 한 줄씩 추가됩니다. 이 줄에서는 열의 의미가 다릅니다.
+
+| 열 | 의미 |
+| --- | --- |
+| `Offset` | 이미지 데이터(PNG 시그니처 또는 BITMAPINFOHEADER) 주소. 파일 이름에도 쓰임 |
+| `Formats` | `PNG image` 또는 `DIB image` |
+| `Text` | 가로x세로, 색 깊이, 파일 크기 |
+| `File output` | 저장된 파일 이름 |
+
+```
+PID    Process      Offset         Formats    Text                             File output
+10472  svchost.exe  0x1d84312000e  DIB image  317x211, 32 bpp, 267602 bytes    cliphistory.10472.0x1d84312000e.bmp
+10472  svchost.exe  0x1d84376000e  DIB image  1283x719, 32 bpp, 3689962 bytes  cliphistory.10472.0x1d84376000e.bmp
+```
+
+이미지 항목의 픽셀은 공개되지 않은 중첩 속성 맵 뒤에 있어서, 오프셋으로 따라가지 않고 **시그니처로 카빙**합니다. 그래서 이미지가 어느 히스토리 항목(`Bitmap`)의 것인지는 자동으로 연결되지 않습니다. 크기와 내용, 복사 순서로 직접 대조하세요.
+
 ## 한계
-- 내용을 디코딩하는 건 `Text` 포맷뿐입니다. 다른 포맷(HTML, 이미지, 파일)은 이름만 표시합니다.
+- 내용을 디코딩하는 건 `Text` 포맷뿐입니다. 이미지는 `--dump`로 카빙할 수 있지만 항목과 연결되지 않고, HTML과 파일 포맷은 이름만 표시합니다.
+- 카빙은 프로세스 메모리에 남은 이미지를 모두 찾기 때문에, 이미 히스토리에서 지워진 이미지가 함께 나올 수 있습니다.
 - 해제된 항목은 최대한 복구하지만, 메모리가 일부 재사용됐다면 포맷이나 텍스트가 비어 있을 수 있습니다.
 - 4MB를 넘는 항목은 클립보드 히스토리가 애초에 보관하지 않으므로 복구할 수 없습니다.
 
