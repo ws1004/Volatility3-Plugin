@@ -1,14 +1,41 @@
-**Korean** | [English](docs/README.en.md)
+**English** | [한국어](docs/README.ko.md)
 
 # Volatility3-Plugin
 
-개인 연구를 하며 만든 Volatility3 플러그인을 이곳에 올립니다.
+A collection of Volatility 3 plugins for Windows memory forensics, written during personal research. Each plugin is a single Python file with its own documentation.
 
-### 현재 제작된 플러그인 : 
-- [`detect_injection.py`](detect_injection/README.md) : Windows 시스템에서 실행 중인 프로세스의 DLL 인젝션, 스레드 인젝션, PE 인젝션을 탐지하는 플러그인입니다. *(v2.x는 Volatility 3 Framework 2.26.0 이상 필요)*
-- [`clipboard.py`](clipboard/README.md) : Windows 11 24H2/25H2에서 커널 윈도우 스테이션 구조체(tagWINDOWSTATION → tagCLIP → tagCLIPDATA)를 따라가 현재 클립보드 내용(모든 포맷과 이전 복사의 잔해)을 복구하는 플러그인입니다. *(Volatility 3 Framework 2.26.0 이상 필요)*
-- [`cliphistory.py`](cliphistory/README.md) : Clipboard User Service(cbdhsvc)의 힙에서 해제된 항목을 포함한 클립보드 히스토리(Win+V) 항목을 복구하고, 옵션으로 클립보드 이미지(PNG, DIB)도 카빙하는 플러그인입니다. *(Volatility 3 Framework 2.26.0 이상 필요)*
+## Plugins
 
-### 앞으로 만들 플러그인
-- 아직 만들어진 적 없는 플러그인
-- Volatility2에는 있었지만 Volatility3에는 아직 없는 플러그인
+| Plugin | What it does | Where the data comes from | Target | Docs |
+| --- | --- | --- | --- | --- |
+| [`windows.clipboard`](clipboard/clipboard.py) | Recovers the **current clipboard contents** in every format, plus remnants of earlier copies | Kernel window station structures (`tagWINDOWSTATION` → `tagCLIP` → `tagCLIPDATA`, pool tag `Uscb`) | Windows 11 24H2 / 25H2 | [English](clipboard/README.md) · [한국어](clipboard/docs/README.ko.md) |
+| [`windows.cliphistory`](cliphistory/cliphistory.py) | Recovers **clipboard history (Win+V)** items, including freed (deleted or evicted) ones, and optionally carves clipboard images (PNG, DIB) | Heap of the Clipboard User Service (`cbdhsvc`) inside `svchost.exe` | Windows 11 25H2 | [English](cliphistory/README.md) · [한국어](cliphistory/docs/README.ko.md) |
+| [`windows.detect_injection`](detect_injection/detect_injection.py) | Detects **DLL injection, thread injection, and PE injection** in running processes | Process memory, loaded modules, and threads | Windows | [English](detect_injection/README.md) · [한국어](detect_injection/docs/README.ko.md) |
+
+All current plugins require **Volatility 3 Framework 2.26.0 or higher**. (`detect_injection` v1.x supported 2.5.2 to 2.11.0; see its documentation.)
+
+## Quick start
+
+1. Copy the plugin file into the Volatility 3 Windows plugin directory:
+    ```
+    volatility3/volatility3/framework/plugins/windows/
+    ```
+2. Run it like any built-in plugin:
+    ```
+    python vol.py -f [memory_dump.raw] windows.clipboard
+    python vol.py -f [memory_dump.raw] windows.cliphistory
+    python vol.py -f [memory_dump.raw] windows.detect_injection --dll --thread --pe
+    ```
+
+`detect_injection` needs two extra modules (`pefile`, `colorama`). Install them with `pip install -r detect_injection/requirements.txt`. The clipboard plugins have no extra dependencies.
+
+Options, output columns, example output, and limitations are described in each plugin's documentation.
+
+## Planned
+
+- Plugins that do not exist anywhere yet
+- Plugins that existed in Volatility 2 but have not been ported to Volatility 3
+
+## License
+
+MIT. See [LICENSE](LICENSE).

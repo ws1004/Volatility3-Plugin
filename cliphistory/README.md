@@ -1,99 +1,94 @@
-**Korean** | [English](docs/README.en.md)
+**English** | [한국어](docs/README.ko.md)
 
 # Clipboard History - Volatility 3 Plugin
 
-## 설명
-`cliphistory`는 Windows 메모리 덤프에서 **클립보드 히스토리(Win+V) 항목**을 복구하는 Volatility 3 플러그인입니다.
+## Description
+`cliphistory` is a custom plugin for Volatility 3 that recovers **clipboard history (Win+V) items** from a Windows memory dump.
 
-현재 클립보드와 달리 히스토리는 커널에 있지 않습니다. 로그인한 사용자마다 `svchost.exe` 안에서 도는 Clipboard User Service(`cbdhsvc_<LUID>`)가 자기 프로세스 힙에 보관합니다.
+Unlike the current clipboard, the history is not kept in the kernel. It is kept by the Clipboard User Service (`cbdhsvc_<LUID>`), which runs inside an `svchost.exe` per logged on user, in that process's heap:
 
 ```
 CBDHSvc!ClipboardHistoryItemInternal
-  +0x00  vftable 포인터 3개 (cbdhsvc.dll 안)
+  +0x00  3 vftable pointers (inside cbdhsvc.dll)
   +0x40  ItemId     (GUID)
   +0x50  Timestamp  (FILETIME)
   +0x60  CDataPackage * ──► windows.applicationmodel.datatransfer!CDataPackage
-                              +0xE0  포맷 객체 배열 ──► 포맷 객체
-                              +0xE8  포맷 개수          +0x08  이름 (HSTRING, 예: "Text")
-                                                        +0x18  텍스트 (UTF-16, "Text"만)
+                              +0xE0  format object array ──► format object
+                              +0xE8  format count              +0x08  name (HSTRING, e.g. "Text")
+                                                               +0x18  text (UTF-16, "Text" only)
 ```
 
-플러그인은 `cbdhsvc.dll`이 로드된 모든 프로세스의 private 메모리를 스캔합니다. 그리고 다음 세 가지 모양으로 히스토리 항목을 찾아냅니다.
-- vftable 3개가 모두 `cbdhsvc.dll` 안을 가리킴
-- 타임스탬프 값이 그럴듯함
-- 데이터 패키지의 vftable이 data transfer DLL 안을 가리킴
+The plugin scans the private memory of every process that has `cbdhsvc.dll` loaded and identifies history items by their shape: three vftables inside `cbdhsvc.dll`, a plausible timestamp, and a data package whose vftable is inside the data transfer DLL. Because it does not walk the heap, **freed items that have not been overwritten yet are recovered as well**.
 
-힙을 따라가는 방식이 아니라서, **해제됐지만 아직 덮어쓰이지 않은 항목도 함께 복구됩니다.**
+The history only exists when it has been turned on (Settings > System > Clipboard > Clipboard history).
 
-히스토리는 기능을 켠 경우에만 존재합니다(설정 > 시스템 > 클립보드 > 클립보드 검색 기록).
+> Companion plugin: [`clipboard`](../clipboard/README.md) recovers the **current** clipboard contents from the kernel.
 
-> 함께 쓰는 플러그인: [`clipboard`](../clipboard/README.md)는 커널에서 **현재** 클립보드 내용을 복구합니다.
+## Compatibility
+None of these types are in public PDBs, so the offsets are hard coded:
 
-## 호환성
-이 타입들은 모두 공개 PDB에 없어서, 오프셋을 코드에 직접 넣었습니다.
-
-| 구성 요소 | 버전 | 상태 |
+| Component | Version | Status |
 | --- | --- | --- |
-| Windows 11 25H2 | 26200.9457 | 테스트 완료 |
-| `cbdhsvc.dll` | 10.0.26100.8117 | 테스트 완료 |
-| `windows.applicationmodel.datatransfer.dll` | 10.0.26100.1 | 테스트 완료 |
+| Windows 11 25H2 | 26200.9457 | Tested |
+| `cbdhsvc.dll` | 10.0.26100.8117 | Tested |
+| `windows.applicationmodel.datatransfer.dll` | 10.0.26100.1 | Tested |
 
-다른 빌드에서는 필드 위치가 바뀔 수 있으니 오프셋을 다시 확인해야 합니다.
+Other builds may move the fields and need the offsets re-checked.
 
-## 요구 사항
-- Python 3.10 이상
-- Volatility 3 Framework 2.26.0 이상 (2.28.3에서 테스트)
-- 추가 모듈 없음
+## Requirements
+- Python 3.10 or higher
+- Volatility 3 Framework (version. 2.26.0 or higher, tested on 2.28.3)
+- No additional modules
 
-## 사용법
-cliphistory.py 파일을 volatility3/volatility3/framework/plugins/windows/cliphistory.py 경로에 저장합니다.
+## Usage
+Save the cliphistory.py file in the path volatility3/volatility3/framework/plugins/windows/cliphistory.py.
 
-### 기본 명령 :
+### Basic Command :
 ```markdown
 python vol.py -f [memory_dump.raw] windows.cliphistory
 ```
-### 옵션 :
-- `--pid PID [PID ...]` : 지정한 프로세스만 스캔합니다. `cbdhsvc`가 도는 `svchost.exe`만 지정하면 훨씬 빠릅니다.
-- `--text-limit N` : 항목마다 표시할 최대 글자 수. `0`이면 제한 없음. (기본값: 256)
-- `--dump` : 각 항목의 전체 텍스트를 파일로 저장하고, 같은 프로세스 메모리에서 클립보드 이미지(PNG, DIB)를 카빙해 `.png` / `.bmp` 파일로 저장합니다. 파일 이름은 `cliphistory.<PID>.<Offset>.<확장자>`입니다.
+### Options :
+- `--pid PID [PID ...]` : Only scan these processes. Scanning only the `svchost.exe` hosting `cbdhsvc` is much faster.
+- `--text-limit N` : Maximum number of characters of text to display per item. `0` for no limit. (default: 256)
+- `--dump` : Write the complete text of each item to a file, and carve the clipboard images (PNG and DIB) from the same process memory to `.png` / `.bmp` files. Files are named `cliphistory.<PID>.<Offset>.<extension>`.
 
-### 명령 예시 :
-1. Clipboard User Service가 도는 프로세스 찾기 :
+### Example Commands :
+1. Find the process hosting the Clipboard User Service :
     ```markdown
     python vol.py -f [memory_dump.raw] windows.svcscan | findstr cbdhsvc
     ```
-2. 그 프로세스에서만 히스토리 복구 :
+2. Recover the history from that process only :
     ```markdown
     python vol.py -f [memory_dump.raw] windows.cliphistory --pid [PID]
     ```
-3. 모든 항목의 전체 텍스트와 이미지 저장 :
+3. Dump the full text of every item and the images :
     ```markdown
     python vol.py -o [output_dir] -f [memory_dump.raw] windows.cliphistory --pid [PID] --dump
     ```
 
-## 출력
+## Output
 
-| 열 | 의미 |
+| Column | Meaning |
 | --- | --- |
-| `PID` / `Process` | Clipboard User Service가 도는 프로세스 |
-| `Offset` | `ClipboardHistoryItemInternal` 객체 주소 |
-| `Timestamp` | 복사한 시각 (UTC) |
-| `ItemId` | 히스토리 항목의 GUID |
-| `Formats` | 항목의 데이터 패키지에 든 포맷 이름 (예: `Text`, `HTML Format`, `Bitmap`) |
-| `Length` | 텍스트 글자 수 |
-| `Text` | `Text` 포맷이 있을 때 그 내용 |
+| `PID` / `Process` | The process hosting the Clipboard User Service |
+| `Offset` | Address of the `ClipboardHistoryItemInternal` object |
+| `Timestamp` | When the item was copied (UTC) |
+| `ItemId` | GUID of the history item |
+| `Formats` | Names of the formats in the item's data package (e.g. `Text`, `HTML Format`, `Bitmap`) |
+| `Length` | Number of characters of text |
+| `Text` | The text of the item, when it has a `Text` format |
 
-항목은 타임스탬프 순으로 정렬됩니다.
+Items are sorted by timestamp.
 
-### 이미지 (`--dump`)
-`--dump`를 주면 히스토리 항목 뒤에 카빙한 이미지가 한 줄씩 추가됩니다. 이 줄에서는 열의 의미가 다릅니다.
+### Images (`--dump`)
+With `--dump`, one row per carved image is added after the history items. In these rows the columns mean:
 
-| 열 | 의미 |
+| Column | Meaning |
 | --- | --- |
-| `Offset` | 이미지 데이터(PNG 시그니처 또는 BITMAPINFOHEADER) 주소. 파일 이름에도 쓰임 |
-| `Formats` | `PNG image` 또는 `DIB image` |
-| `Text` | 가로x세로, 색 깊이, 파일 크기 |
-| `File output` | 저장된 파일 이름 |
+| `Offset` | Address of the image data (PNG signature or BITMAPINFOHEADER), also used in the file name |
+| `Formats` | `PNG image` or `DIB image` |
+| `Text` | Width x height, color depth and file size |
+| `File output` | Name of the written file |
 
 ```
 PID    Process      Offset         Formats    Text                             File output
@@ -101,18 +96,18 @@ PID    Process      Offset         Formats    Text                             F
 10472  svchost.exe  0x1d84376000e  DIB image  1283x719, 32 bpp, 3689962 bytes  cliphistory.10472.0x1d84376000e.bmp
 ```
 
-이미지 항목의 픽셀은 공개되지 않은 중첩 속성 맵 뒤에 있어서, 오프셋으로 따라가지 않고 **시그니처로 카빙**합니다. 그래서 이미지가 어느 히스토리 항목(`Bitmap`)의 것인지는 자동으로 연결되지 않습니다. 크기와 내용, 복사 순서로 직접 대조하세요.
+The pixels of image items sit behind nested, undocumented property maps, so the images are **carved by signature** instead of being followed by offset. As a result an image is not tied to its history item (`Bitmap`) automatically; match them by size, content and copy order.
 
-## 한계
-- 내용을 디코딩하는 건 `Text` 포맷뿐입니다. 이미지는 `--dump`로 카빙할 수 있지만 항목과 연결되지 않고, HTML과 파일 포맷은 이름만 표시합니다.
-- 카빙은 프로세스 메모리에 남은 이미지를 모두 찾기 때문에, 이미 히스토리에서 지워진 이미지가 함께 나올 수 있습니다.
-- 해제된 항목은 최대한 복구하지만, 메모리가 일부 재사용됐다면 포맷이나 텍스트가 비어 있을 수 있습니다.
-- 4MB를 넘는 항목은 클립보드 히스토리가 애초에 보관하지 않으므로 복구할 수 없습니다.
+## Limitations
+- Only the `Text` format is decoded. Images can be carved with `--dump` but are not tied to their items; HTML and file formats are listed by name only.
+- Carving finds every image left in the process memory, so images already removed from the history may be returned as well.
+- Freed items are recovered on a best effort basis; an item whose memory was partly reused may show no formats or no text.
+- Items larger than 4 MB are not kept by the clipboard history and therefore cannot be recovered.
 
-## 라이선스
-이 플러그인은 MIT 라이선스로 배포됩니다. 자세한 내용은 LICENSE 파일을 참고하세요.
+## License
+This plugin is distributed under the MIT License. See the LICENSE file for more details.
 
-## 작성자
+## Author
 - Name : ws1004(GyuBin Kim)
 - Email : ws1004@kakao.com
 - Version : 1.0.0
